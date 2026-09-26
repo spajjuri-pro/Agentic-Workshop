@@ -29,24 +29,13 @@ def load_seed(db_path: Path = DB_PATH) -> None:
     """
     tickets_header, tickets_rows = _read_csv(TICKETS_CSV)
     customers_header, customers_rows = _read_csv(CUSTOMERS_CSV)
-    customers_rows = [
-        tuple(
-            int(value) if column == "open_tickets" else value
-            for column, value in zip(customers_header, row)
-        )
-        for row in customers_rows
-    ]
 
     with sqlite3.connect(db_path) as conn:
         conn.execute("DROP TABLE IF EXISTS tickets")
         conn.execute("DROP TABLE IF EXISTS customers")
 
         tickets_cols = ", ".join(tickets_header)
-        customers_cols = ", ".join(
-            f"{column} INTEGER" if column == "open_tickets" else column
-            for column in customers_header
-        )
-        customers_insert_cols = ", ".join(customers_header)
+        customers_cols = ", ".join(customers_header)
         conn.execute(f"CREATE TABLE tickets ({tickets_cols})")
         conn.execute(f"CREATE TABLE customers ({customers_cols})")
 
@@ -55,7 +44,7 @@ def load_seed(db_path: Path = DB_PATH) -> None:
             tickets_rows,
         )
         conn.executemany(
-            f"INSERT INTO customers ({customers_insert_cols}) VALUES ({', '.join('?' * len(customers_header))})",
+            f"INSERT INTO customers ({customers_cols}) VALUES ({', '.join('?' * len(customers_header))})",
             customers_rows,
         )
 
