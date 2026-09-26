@@ -80,4 +80,4 @@ context: []
 **Commands:**
 - `uv run python load_seed.py` -- expected: creates `app.db`; running twice yields the same database.
 - `uv run pytest` -- expected: passes (tests added for loader idempotency and schema validation).
-- `uv run python -c "import sqlite3; c=sqlite3.connect('app.db'); print(c.execute('select count(*) from tickets').fetchone(), c.execute('select count(*) from customers').fetchone())"` -- expected: `(24, 20)` (24 tickets, 20 customers).
+- `uv run python -c "import sqlite3; c=sqlite3.connect('app.db'); print(c.execute('select count(*) from tickets').fetchone(), c.execute('select count(*) from customers').fetchone())"` -- expected: `(24,) (20,)` (24 tickets, 20 customers).
