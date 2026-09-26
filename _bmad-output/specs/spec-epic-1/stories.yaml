@@ -1,0 +1,12 @@
+- id: "1"
+  title: The loader
+  description: >-
+    Build load_seed.py (CAP-1): read seed/tickets.csv and seed/customers.csv
+    into app.db as the tickets and customers tables with the same columns,
+    idempotently, so mcp/triage_server.py keeps working.
+- id: "2"
+  title: The triage-decision schema
+  description: >-
+    Define the triage-decision schema (CAP-2): a JSON object with enumerated
+    category/priority/route and a one-sentence rationale, rejecting anything
+    malformed with a clear error.
