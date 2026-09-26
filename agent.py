@@ -312,27 +312,15 @@ async def triage(ticket_id: str) -> dict[str, Any]:
     if not isinstance(customer, dict):
         raise ValueError(f"No customer with ID {ticket['customer_id']}")
 
+    # No response_format here: native JSON mode (ProviderStrategy) can't be combined
+    # with real tool calling on Groq's API, and LangChain's tool-calling capture
+    # strategy (ToolStrategy) makes Groq's openai/gpt-oss-120b emit an invalid
+    # built-in "json" tool call instead. The system prompt already requires plain
+    # JSON output, and _parse_decision parses that from the final message text.
     agent = create_agent(
         model=_build_model(),
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "triage_decision",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "category": {"type": "string"},
-                        "priority": {"type": "string"},
-                        "route": {"type": "string"},
-                        "rationale": {"type": "string"},
-                    },
-                    "required": ["category", "priority", "route", "rationale"],
-                    "additionalProperties": False,
-                },
-            },
-        },
     )
 
     context = (
