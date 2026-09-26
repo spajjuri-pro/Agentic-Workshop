@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
@@ -11,9 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
+from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from triage_schema import validate_decision
 
@@ -36,10 +41,51 @@ SYSTEM_PROMPT = (
     "- The rationale must be exactly one sentence and name the policy rule you applied.\n"
     "- The category must match the route in the policy table.\n"
     "- If the customer is on the Enterprise plan with 3 or more open tickets, raise priority by one level (P3 -> P2, P2 -> P1). P1 stays P1.\n"
+    "- If the final priority is P1 and the customer is on the Enterprise plan, call escalate_to_human(ticket_id, reason) before giving your final answer. A person must approve it; if it is rejected, do not escalate and still return your decision.\n"
     "- Return only valid JSON, not markdown fences.\n\n"
     "Policy source:\n"
     f"{POLICY_PATH.read_text(encoding='utf-8')}"
 )
+
+
+@tool
+def escalate_to_human(ticket_id: str, reason: str) -> str:
+    """Escalate a P1 ticket from an Enterprise customer to a person. Requires human approval."""
+    return f"Ticket {ticket_id} escalated to a human: {reason}"
+
+
+def _ask_approval(action: dict[str, Any]) -> bool:
+    """Ask at the terminal whether to run a gated action. Only an explicit yes approves."""
+    args = action.get("args", {})
+    print(
+        f"\nApproval needed: {action.get('name')} ticket {args.get('ticket_id')} "
+        f"({args.get('reason')})",
+        file=sys.stderr,
+    )
+    try:
+        answer = input("Escalate to a human? [yes/no]: ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+async def _run_with_approval(agent: Any, prompt: str, thread_id: str) -> Any:
+    """Invoke the agent, pausing on human-in-the-loop interrupts until it completes."""
+    config = {"configurable": {"thread_id": thread_id}}
+    payload: Any = {"messages": [{"role": "user", "content": prompt}]}
+    while True:
+        result = await agent.ainvoke(payload, config)
+        interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
+        if not interrupts:
+            return result
+        decisions = []
+        for action in interrupts[0].value["action_requests"]:
+            approved = await asyncio.to_thread(_ask_approval, action)
+            if approved:
+                decisions.append({"type": "approve"})
+            else:
+                decisions.append({"type": "reject", "message": "A person declined the escalation."})
+        payload = Command(resume={"decisions": decisions})
 
 
 def _build_model() -> Any:
@@ -319,8 +365,10 @@ async def triage(ticket_id: str) -> dict[str, Any]:
     # JSON output, and _parse_decision parses that from the final message text.
     agent = create_agent(
         model=_build_model(),
-        tools=tools,
+        tools=[*tools, escalate_to_human],
         system_prompt=SYSTEM_PROMPT,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"escalate_to_human": {"allowed_decisions": ["approve", "reject"]}})],
+        checkpointer=InMemorySaver(),
     )
 
     context = (
@@ -336,7 +384,7 @@ async def triage(ticket_id: str) -> dict[str, Any]:
 
     for attempt in range(2):
         try:
-            result = await agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
+            result = await _run_with_approval(agent, prompt, f"{ticket_id}-{attempt}")
         except ValueError:
             if attempt == 1:
                 raise
