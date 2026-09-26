@@ -2,7 +2,7 @@
 title: 'The loader'
 type: 'feature'
 created: '2026-09-26'
-status: 'in-progress'
+status: 'done'
 route: 'oneshot'
 review_loop_iteration: 0
 context: []
@@ -23,7 +23,8 @@ context: []
 - Created `load_seed.py` using stdlib `csv` + `sqlite3` (no new deps). Drops and recreates tables each run for idempotency.
 - Added `tests/test_load_seed.py` (4 tests: table creation + counts, idempotency, column names, MCP server compatibility).
 - Added `pythonpath = ["."]` to `[tool.pytest.ini_options]` in `pyproject.toml` so tests can import `load_seed`.
-- Verified: `uv run python load_seed.py` twice → `(24,) (20,)`; `uv run pytest` → 3 passed.
+- Declared `open_tickets` as an integer and converted the CSV value so the MCP customer-history tool returns a numeric count.
+- Verified: `uv run python load_seed.py` twice → `(24,) (20,)`; `uv run pytest` → 13 passed, including all 4 loader tests.
 - Verified `mcp/triage_server.py` reads `app.db` correctly (get_ticket T-1042 → C-77; get_customer_history → Northwind, ticket_ids [T-1042, T-1047]).
 
 ## Spec Change Log
@@ -37,10 +38,15 @@ context: []
 - `low` — `load_seed.py` had no explicit handling for empty CSVs; this is not a real issue in the current trusted dataset and would be a separate robustness improvement, so it was deferred.
 - `low` — no primary-key or foreign-key constraints were added; the dataset is trusted and the schema must match the CSV contract, so this is deferred rather than altered.
 - `low` — SQL identifier interpolation from CSV headers is not an active exploit here because the seed is read-only; it remains a future hardening consideration, not a required fix for this story.
+- `medium` — `get_customer_history` returned `open_tickets` as a string because SQLite inferred no column type; declared and converted the field to integer, with a regression assertion for the full customer row.
+- `low` — MCP compatibility test asserted only selected fields; expanded it to compare the complete ticket and customer rows.
+- `false` — header validation is unnecessary for the supported read-only seed inputs; the checked-in headers match the MCP contract, and changing them is outside this story's supported operation.
+- `low` — empty or headerless CSV handling remains deferred because the seed files are trusted, read-only inputs and this invalid state is not part of the story contract.
+- `low` — the prior implementation note's test total was stale; corrected it to the verified full-suite result of 13 passed.
 
 ## Verification
 
 **Commands:**
 - `uv run python load_seed.py` -- expected: creates `app.db`; running twice yields the same database.
 - `uv run python -c "import sqlite3; c=sqlite3.connect('app.db'); print(c.execute('select count(*) from tickets').fetchone(), c.execute('select count(*) from customers').fetchone())"` -- expected: `(24,) (20,)`.
-- `uv run pytest` -- expected: passes (loader idempotency test).
+- `uv run pytest` -- expected: all 13 tests pass.

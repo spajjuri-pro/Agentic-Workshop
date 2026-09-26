@@ -58,9 +58,18 @@ def test_mcp_server_reads_loaded_db(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "DB_PATH", db)
 
     ticket = server.get_ticket("T-1042")
-    assert ticket["customer_id"] == "C-77"
+    assert ticket == {
+        "ticket_id": "T-1042",
+        "customer_id": "C-77",
+        "created_at": "2026-09-01T09:14:00",
+        "text": "I was charged twice this month and nobody answers.",
+    }
 
     customer = server.get_customer_history(ticket["customer_id"])
-    assert customer["name"] == "Northwind"
-    assert customer["plan"] == "Enterprise"
-    assert customer["ticket_ids"] == ["T-1042", "T-1047"]
+    assert customer == {
+        "customer_id": "C-77",
+        "name": "Northwind",
+        "plan": "Enterprise",
+        "open_tickets": 2,
+        "ticket_ids": ["T-1042", "T-1047"],
+    }
