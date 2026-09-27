@@ -101,6 +101,9 @@ def _parse_decision(raw: Any) -> dict[str, Any] | None:
     if isinstance(raw, list):
         if not raw:
             return None
+        if all(isinstance(b, dict) and b.get("type") == "text" for b in raw):
+            # Gemini returns message content as a list of text blocks.
+            return _parse_decision("".join(b.get("text", "") for b in raw))
         return _parse_decision(raw[-1])
 
     if hasattr(raw, "content"):

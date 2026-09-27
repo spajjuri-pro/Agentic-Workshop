@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -166,3 +167,10 @@ def test_set_provider_missing_api_key_raises(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(ValueError, match="GROQ_API_KEY"):
         agent._build_model()
+
+
+def test_parse_decision_handles_gemini_text_block_content():
+    decision = {"category": "billing", "priority": "P2", "route": "billing-team", "rationale": "The billing rule applies."}
+    message = SimpleNamespace(content=[{"type": "text", "text": json.dumps(decision, indent=2), "extras": {"signature": "x"}}])
+
+    assert agent._parse_decision({"messages": [message]}) == decision
