@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -222,3 +223,9 @@ def test_agent_gates_escalate_to_human_with_hitl_middleware(monkeypatch):
     assert any(getattr(t, "name", None) == "escalate_to_human" for t in captured["tools"])
     assert captured["checkpointer"] is not None
     assert any(m.__class__.__name__ == "HumanInTheLoopMiddleware" for m in captured["middleware"])
+
+def test_parse_decision_handles_gemini_text_block_content():
+    decision = {"category": "billing", "priority": "P2", "route": "billing-team", "rationale": "The billing rule applies."}
+    message = SimpleNamespace(content=[{"type": "text", "text": json.dumps(decision, indent=2), "extras": {"signature": "x"}}])
+
+    assert agent._parse_decision({"messages": [message]}) == decision
