@@ -108,8 +108,13 @@ def rationale_judge(outputs, expectations) -> Feedback:
         k: outputs.get(k, "") for k in ("category", "priority", "route", "rationale")
     })
     text = _judge_model().invoke(prompt).text
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    verdict = json.loads(match.group(0)) if match else {}
+    match = re.search(r'\{[^{}]*"verdict"[^{}]*\}', text, re.DOTALL)
+    if match is None:
+        raise ValueError(f"Judge returned no verdict JSON: {text[:200]!r}")
+    try:
+        verdict = json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Judge returned malformed verdict JSON: {text[:200]!r}") from exc
     if verdict.get("verdict") not in {"pass", "fail"}:
         raise ValueError(f"Judge returned an unusable verdict: {text[:200]!r}")
     return Feedback(value=verdict["verdict"], rationale=str(verdict.get("reason", "")).strip())
@@ -121,10 +126,8 @@ def build_report(run_id: str, experiment_id: str) -> dict:
     values: dict[str, list[float]] = {name: [] for name in SCORERS}
     total_tokens = 0
     for trace in traces:
-        if trace.data.spans[0].name != "triage_eval" and not any(
-            s.parent_id is None and s.name == "triage_eval" for s in trace.data.spans
-        ):
-            continue  # judge calls are not agent spend
+        if not any(s.parent_id is None and s.name == "triage_eval" for s in trace.data.spans):
+            continue  # judge calls (and any trace with no root span) are not agent spend
         total_tokens += (trace.info.token_usage or {}).get("total_tokens", 0)
         for a in trace.info.assessments:
             if a.name in values and a.feedback is not None and a.feedback.value is not None:

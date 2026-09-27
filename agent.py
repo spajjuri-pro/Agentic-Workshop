@@ -48,12 +48,6 @@ SYSTEM_PROMPT = (
 )
 
 
-@tool
-def escalate_to_human(ticket_id: str, reason: str) -> str:
-    """Escalate a P1 ticket from an Enterprise customer to a person. Requires human approval."""
-    return f"Ticket {ticket_id} escalated to a human: {reason}"
-
-
 def _ask_approval(action: dict[str, Any]) -> bool:
     """Ask at the terminal whether to run a gated action. Only an explicit yes approves."""
     args = action.get("args", {})
@@ -197,8 +191,14 @@ def _decision_is_well_formed(decision: dict[str, Any]) -> bool:
         return False
     if route not in {"billing-team", "bug-team", "access-team", "performance-team", "how-to-team"}:
         return False
+    if route != f"{category}-team":
+        return False
     rationale_text = rationale.strip()
-    if len(re.findall(r"[.!?]", rationale_text)) != 1:
+    # A mark only counts as a sentence boundary when followed by whitespace + a
+    # capital letter (a new sentence) or the end of the string, so abbreviations
+    # and figures (e.g. "i.e.", "P2->P1.") don't trigger a false multi-sentence reject.
+    sentence_enders = re.findall(r"[.!?](?=\s+[A-Z]|\s*$)", rationale_text)
+    if len(sentence_enders) != 1:
         return False
     if not rationale_text.endswith((".", "!", "?")):
         return False
@@ -242,88 +242,16 @@ async def _invoke_tool(tool: Any, **kwargs: Any) -> Any:
                 return result
         return result
 
-    def _call(fn: Any) -> Any:
-        try:
-            result = fn(**kwargs)
-        except TypeError:
-            result = fn(kwargs)
-        return _parse_tool_payload(result)
-
-    if isinstance(tool, dict):
-        if "ainvoke" in tool and callable(tool["ainvoke"]):
-            result = tool["ainvoke"]
-            try:
-                result = result(**kwargs)
-            except TypeError:
-                result = result(kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            return _parse_tool_payload(result)
-        if "invoke" in tool and callable(tool["invoke"]):
-            result = tool["invoke"]
-            try:
-                result = result(**kwargs)
-            except TypeError:
-                result = result(kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            return _parse_tool_payload(result)
-        if "func" in tool and callable(tool["func"]):
-            result = tool["func"]
-            try:
-                result = result(**kwargs)
-            except TypeError:
-                result = result(kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            return _parse_tool_payload(result)
-        if callable(tool.get("callable")):
-            result = tool["callable"]
-            try:
-                result = result(**kwargs)
-            except TypeError:
-                result = result(kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            return _parse_tool_payload(result)
-
-    if hasattr(tool, "ainvoke"):
-        result = tool.ainvoke
-        try:
-            result = result(**kwargs)
-        except TypeError:
-            result = result(kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _parse_tool_payload(result)
-    if hasattr(tool, "invoke"):
-        result = tool.invoke
-        try:
-            result = result(**kwargs)
-        except TypeError:
-            result = result(kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _parse_tool_payload(result)
-    if hasattr(tool, "func") and callable(tool.func):
-        result = tool.func
-        try:
-            result = result(**kwargs)
-        except TypeError:
-            result = result(kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _parse_tool_payload(result)
-    if callable(tool):
-        result = tool
-        try:
-            result = result(**kwargs)
-        except TypeError:
-            result = result(kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _parse_tool_payload(result)
-    raise TypeError(f"Unsupported tool object: {type(tool)!r}")
+    fn = getattr(tool, "ainvoke", None) or getattr(tool, "invoke", None)
+    if fn is None:
+        raise TypeError(f"Unsupported tool object: {type(tool)!r}")
+    try:
+        result = fn(**kwargs)
+    except TypeError:
+        result = fn(kwargs)
+    if inspect.isawaitable(result):
+        result = await result
+    return _parse_tool_payload(result)
 
 
 async def triage(ticket_id: str) -> dict[str, Any]:
@@ -331,27 +259,10 @@ async def triage(ticket_id: str) -> dict[str, Any]:
     loaded_tools = _load_tools()
     tools = await loaded_tools if hasattr(loaded_tools, "__await__") else loaded_tools
     tool_map: dict[str, Any] = {}
-    for tool in tools:
-        name = None
-        if isinstance(tool, dict):
-            name = tool.get("name")
-        else:
-            name = getattr(tool, "name", None)
+    for mcp_tool in tools:
+        name = mcp_tool.get("name") if isinstance(mcp_tool, dict) else getattr(mcp_tool, "name", None)
         if name:
-            tool_map[name] = tool
-
-    if "get_ticket" not in tool_map or "get_customer_history" not in tool_map:
-        ticket_tool = next((t for t in tools if isinstance(t, dict) and t.get("name") == "get_ticket"), None)
-        customer_tool = next((t for t in tools if isinstance(t, dict) and t.get("name") == "get_customer_history"), None)
-        if ticket_tool is not None:
-            tool_map["get_ticket"] = ticket_tool
-        if customer_tool is not None:
-            tool_map["get_customer_history"] = customer_tool
-
-    if "get_ticket" not in tool_map and tools:
-        tool_map["get_ticket"] = tools[0]
-    if "get_customer_history" not in tool_map and len(tools) > 1:
-        tool_map["get_customer_history"] = tools[1]
+            tool_map[name] = mcp_tool
 
     ticket = await _invoke_tool("get_ticket", _tool_registry=tool_map, ticket_id=ticket_id)
     if not isinstance(ticket, dict) or "customer_id" not in ticket:
@@ -361,18 +272,14 @@ async def triage(ticket_id: str) -> dict[str, Any]:
     if not isinstance(customer, dict):
         raise ValueError(f"No customer with ID {ticket['customer_id']}")
 
-    # No response_format here: native JSON mode (ProviderStrategy) can't be combined
-    # with real tool calling on Groq's API, and LangChain's tool-calling capture
-    # strategy (ToolStrategy) makes Groq's openai/gpt-oss-120b emit an invalid
-    # built-in "json" tool call instead. The system prompt already requires plain
-    # JSON output, and _parse_decision parses that from the final message text.
-    agent = create_agent(
-        model=_build_model(),
-        tools=[*tools, escalate_to_human],
-        system_prompt=SYSTEM_PROMPT,
-        middleware=[HumanInTheLoopMiddleware(interrupt_on={"escalate_to_human": {"allowed_decisions": ["approve", "reject"]}})],
-        checkpointer=InMemorySaver(),
-    )
+    escalated = False
+
+    @tool
+    def escalate_to_human(ticket_id: str, reason: str) -> str:
+        """Escalate a P1 ticket from an Enterprise customer to a person. Requires human approval."""
+        nonlocal escalated
+        escalated = True
+        return f"Ticket {ticket_id} escalated to a human: {reason}"
 
     context = (
         f"Ticket: {json.dumps(ticket, sort_keys=True)}\n\n"
@@ -386,15 +293,28 @@ async def triage(ticket_id: str) -> dict[str, Any]:
     )
 
     for attempt in range(2):
+        # Once escalate_to_human has actually run (i.e. a person already approved
+        # it), drop it from the retry's tools so re-running the agent from scratch
+        # can't trigger a second approval for the same, already-escalated ticket.
+        agent_tools = [*tools] if escalated else [*tools, escalate_to_human]
+        # No response_format here: native JSON mode (ProviderStrategy) can't be combined
+        # with real tool calling on Groq's API, and LangChain's tool-calling capture
+        # strategy (ToolStrategy) makes Groq's openai/gpt-oss-120b emit an invalid
+        # built-in "json" tool call instead. The system prompt already requires plain
+        # JSON output, and _parse_decision parses that from the final message text.
+        agent = create_agent(
+            model=_build_model(),
+            tools=agent_tools,
+            system_prompt=SYSTEM_PROMPT,
+            middleware=[HumanInTheLoopMiddleware(interrupt_on={"escalate_to_human": {"allowed_decisions": ["approve", "reject"]}})],
+            checkpointer=InMemorySaver(),
+        )
         try:
             result = await _run_with_approval(agent, prompt, f"{ticket_id}-{attempt}")
-        except ValueError:
+        except Exception as exc:
             if attempt == 1:
                 raise
-            continue
-        except Exception:
-            if attempt == 1:
-                raise
+            print(f"triage attempt {attempt} failed, retrying: {exc!r}", file=sys.stderr)
             continue
 
         decision = _parse_decision(result)
@@ -404,14 +324,9 @@ async def triage(ticket_id: str) -> dict[str, Any]:
             continue
 
         try:
-            validated = validate_decision(decision)
-            if not _decision_is_well_formed(validated):
-                raise ValueError("decision failed final policy validation")
-            return validated
+            return validate_decision(decision)
         except ValueError as exc:
             if attempt == 1:
                 raise ValueError(
                     f"Failed to produce a valid triage decision after 2 attempts: {exc}"
                 ) from exc
-
-    raise ValueError("Failed to produce a valid triage decision after 2 attempts")
